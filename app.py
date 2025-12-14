@@ -316,75 +316,84 @@ elif "3." in role:
             allowed = st.session_state['access_rights'].get(target_user, [])
             
             if "Bank_A" in allowed:
-                score = st.session_state['credit_scores'].get(target_user)
-                st.success("Truy cập được CHẤP NHẬN bởi Smart Contract!")
-                
-                c1, c2 = st.columns([1, 2])
-                with c1:
-                    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
-                    st.title(f"{score}")
-                with c2:
-                    st.write("**Báo cáo Đánh giá Rủi ro**")
-                    if score > 650:
-                        st.progress(score/850)
-                        st.write("Khuyến nghị: **DUYỆT VAY**")
-                        st.info("AI phát hiện xác suất vỡ nợ thấp.")
-                    else:
-                        st.progress(score/850)
-                        st.error("Khuyến nghị: **TỪ CHỐI / YÊU CẦU THẾ CHẤP**")
-
-                # MỞ RỘNG: Giải thích chi tiết hơn về RỦI RO dựa trên mô hình
                 model = st.session_state.get('model')
-                stats = st.session_state.get('model_stats', {})
-                if model is None or not stats:
-                    st.info("Không có mô hình đã huấn luyện để giải thích chi tiết. Vui lòng huấn luyện mô hình ở tab Admin.")
-                else:
-                    st.markdown("---")
-                    st.subheader("Giải thích chi tiết rủi ro (Local Explanation)")
-                    # Tìm block data để lấy các thông số nếu có, hoặc yêu cầu nhập thủ công
-                    st.write("Chi tiết các yếu tố ảnh hưởng đến điểm của khách hàng:")
-                    # Ask user for the customer's features to explain (pre-fill with median)
-                    feat_names = stats.get('feature_names', st.session_state['feature_names'])
-                    median_vals = stats.get('X_train_median') if stats.get('X_train_median') is not None else pd.Series([0]*len(feat_names), index=feat_names)
+stats = st.session_state.get('model_stats')
 
-                    # Build input form showing current values if we have them in on-chain record
-                    # Try to locate last scoring details for this user in blockchain
-                    last_details = None
-                    for b in reversed(st.session_state['blockchain']):
-                        if b['data'].get('user') == target_user and b['data'].get('event') in ['CHAM_DIEM','SCORING']:
-                            last_details = b['data'].get('details')
-                            break
+if model is None or stats is None:
+    st.info("Chưa có mô hình AI để giải thích. Vui lòng yêu cầu Admin huấn luyện lại.")
+else:
+    st.markdown("---")
+    st.subheader("🧠 Giải thích Quyết định Chấm điểm (Explainable AI)")
 
-                    input_values = {}
-                    cols = st.columns(len(feat_names))
-                    for i, f in enumerate(feat_names):
-                        default = median_vals.get(f, 0)
-                        if last_details and f.lower() in last_details:
-                            default = last_details.get(f.lower(), default)
-                        with cols[i]:
-                            input_values[f] = st.number_input(f, value=float(default))
+    # 1. Lấy thông tin KH từ block gần nhất
+    last_details = None
+    for b in reversed(st.session_state['blockchain']):
+        if b['data'].get('user') == target_user and b['data'].get('event') == "CHAM_DIEM":
+            last_details = b['data'].get('details')
+            break
 
-                    if st.button("🔎 Phân tích rủi ro cho KH này"):
-                        input_df = pd.DataFrame([input_values])
-                        contrib = explain_instance(model, stats, input_df.iloc[0])
-                        if contrib.empty:
-                            st.info("Không có thông tin để giải thích.")
-                        else:
-                            # Show table and bar chart
-                            st.dataframe(contrib[['Feature','Value','Importance','SignedContribution','PercentOfImpact']].set_index('Feature'))
-                            st.bar_chart(contrib.set_index('Feature')['PercentOfImpact'].sort_values())
+    # 2. Tạo input cho explain
+    feature_names = stats['feature_names']
+    median_vals = stats['X_train_median']
 
-                            # Summarize top risk drivers
-                            negative = contrib[contrib['SignedContribution'] < 0].sort_values(by='SignedContribution')
-                            positive = contrib[contrib['SignedContribution'] > 0].sort_values(by='SignedContribution', ascending=False)
-                            st.markdown("**Top yếu tố làm GIẢM điểm (tăng rủi ro):**")
-                            for _, r in negative.head(3).iterrows():
-                                st.write(f"- {r['Feature']}: giá trị={r['Value']:.2f}, đóng góp={r['SignedContribution']:.4f}")
-                            st.markdown("**Top yếu tố làm TĂNG điểm (giảm rủi ro):**")
-                            for _, r in positive.head(3).iterrows():
-                                st.write(f"- {r['Feature']}: giá trị={r['Value']:.2f}, đóng góp=+{r['SignedContribution']:.4f}")
-            else:
-                st.error("⛔ TRUY CẬP BỊ TỪ CHỐI: Thiếu Token cấp quyền trên Blockchain.")
+    input_data = {}
+    for f in feature_names:
+        # nếu blockchain không lưu đủ, dùng median để tránh sai
+        input_data[f] = last_details.get(f.lower(), median_vals[f]) if last_details else median_vals[f]
+
+    input_df = pd.DataFrame([input_data])
+
+    # 3. Tính đóng góp từng yếu tố
+    contrib_df = explain_instance(model, stats, input_df.iloc[0])
+
+    # 4. Hiển thị bảng giải thích
+    st.write("### 📋 Phân tích chi tiết theo từng yếu tố")
+    st.dataframe(
+        contrib_df[['Feature', 'Value', 'PercentOfImpact']]
+        .rename(columns={
+            'Feature': 'Yếu tố',
+            'Value': 'Giá trị KH',
+            'PercentOfImpact': 'Mức độ tác động (%)'
+        })
+    )
+
+    # 5. Biểu đồ tác động
+    st.write("### 📊 Biểu đồ tác động rủi ro")
+    st.bar_chart(
+        contrib_df.set_index('Feature')['PercentOfImpact']
+        .sort_values()
+    )
+
+    # 6. Tóm tắt ngôn ngữ tự nhiên (RẤT QUAN TRỌNG)
+    st.write("### 📝 Nhận định của Hệ thống")
+
+    negative = contrib_df[contrib_df['SignedContribution'] < 0] \
+                .sort_values(by='SignedContribution')
+
+    positive = contrib_df[contrib_df['SignedContribution'] > 0] \
+                .sort_values(by='SignedContribution', ascending=False)
+
+    if not negative.empty:
+        st.markdown("**⚠️ Các yếu tố làm TĂNG rủi ro tín dụng:**")
+        for _, r in negative.head(3).iterrows():
+            st.write(
+                f"- **{r['Feature']}** (Giá trị: {r['Value']:.1f}) "
+                f"→ ảnh hưởng **{abs(r['PercentOfImpact']):.1f}%**"
+            )
+
+    if not positive.empty:
+        st.markdown("**✅ Các yếu tố làm GIẢM rủi ro tín dụng:**")
+        for _, r in positive.head(3).iterrows():
+            st.write(
+                f"- **{r['Feature']}** (Giá trị: {r['Value']:.1f}) "
+                f"→ cải thiện **{r['PercentOfImpact']:.1f}%**"
+            )
+
+    # 7. Kết luận tự động
+    if score > 650:
+        st.success("📌 KẾT LUẬN: Hồ sơ có rủi ro thấp, phù hợp để phê duyệt tín dụng.")
+    else:
+        st.error("📌 KẾT LUẬN: Hồ sơ có rủi ro cao, cần bổ sung tài sản đảm bảo hoặc từ chối.")
 
 # --- TAB 4: NETWORK ---
 elif "4." in role:
@@ -415,4 +424,5 @@ elif "4." in role:
     * **Người dùng:** Là chủ sở hữu dữ liệu, cấp quyền thông qua Hợp đồng thông minh (Smart Contract).
     * **Máy AI:** Tính toán rủi ro Off-chain (ngoài chuỗi) để giảm tải cho Blockchain.
     * **Blockchain:** Chỉ lưu mã Hash và Điểm số cuối cùng (Đảm bảo tính nhẹ, minh bạch và bảo mật).
+
     """)
