@@ -59,7 +59,13 @@ class SimpleBlockchain:
         new_block = SimpleBlockchain.create_block(data, prev_hash)
         st.session_state['blockchain'].append(new_block)
         return new_block
-
+FEATURE_MAP = {
+    'Age': 'age',
+    'Credit amount': 'credit',
+    'Duration': 'duration',
+    'Telco_Bill': 'telco',
+    'Social_Score': 'social'
+}
 @st.cache_data
 def load_data():
     try:
